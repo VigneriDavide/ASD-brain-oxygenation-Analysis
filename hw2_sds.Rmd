@@ -1,0 +1,1596 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#### Group members
+
+-   Nicola Grieco 2081607
+-   Davide Vigneri 2058036
+-   Sara Pepe 2031951
+
+::: {align="center"}
+<h1><b>Homework 2</b></h1>
+:::
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(VGAM)
+library(tidyverse)
+library(igraph)
+library(ggraph)
+library(ggpubr)
+library(ppcor)
+library(ggthemes)
+library(gridExtra)
+library(latex2exp)
+```
+
+```{r}
+# Loading the data
+load("hw2_data.RData")
+```
+
+> # Point 1
+>
+> ## Description of data
+
+We have two lists of length 12: `asd_sel` and `td_sel`. In other words, we have data from 12 Autism Spectrum Disorder subjects and 12 Typically Developed subjects. Each slot of these lists contains a dataframe of size (145×116) : the 116 columns are related to different ROIs, whereas the 145 rows refer to time series of level of blood oxygenation.
+
+The following are the ASD patients
+
+```{r}
+names(asd_sel)
+```
+
+The following are the TD patients
+
+```{r}
+names(td_sel)
+```
+
+We can notice there is the presence of different laboratory names: "caltech" and "trinity". If we take a look to the data of two different laboratories we can see...
+
+```{r}
+data.frame(head(asd_sel$caltech_0051472))[1:5]
+
+```
+
+```{r}
+data.frame(head(asd_sel$trinity_0050234))[1:5]
+```
+
+The values seem to be very different, but to have a numerical representation let's see their ranges:
+
+```{r}
+range1 <- round(range(asd_sel$caltech_0051472),2)
+range2 <- range(asd_sel$trinity_0050234)
+```
+
+```{r}
+data.frame(min = c(range1[1], range2[1]), max = c(range1[2], range2[2]), row.names = c("range_caltech","range_trinity"))
+```
+
+We have to *standardize* the two types of data coming from different labs.
+
+The most common approach to data scaling involves calculating the mean and standard deviation of each variable and using these values to scale the values.
+
+Along with the presence of significant differences accros the two labs, we also notice that the data (coming from both labs) show several *outliers*. These are values on the edge of the distribution that may have a low probability of occurrence, yet are overrepresented for some reason. Outliers can skew a probability distribution and make data scaling using standardization difficult as the calculated mean and standard deviation will be skewed by the presence of the outliers.
+
+Let's check if our data have outlier values. One way to quickly recognize the presence of outliers is the box-and-whisker plot.
+
+Here are few examples of the distributions of the ROIs of some patients.
+
+```{r}
+boxplot(asd_sel$caltech_0051472, outcol = "red", main = "Boxplot for patient asd caltech_0051472")
+```
+
+```{r}
+boxplot(asd_sel$trinity_0050234, outcol = "red", main = "Boxplot for patient asd trinity_0050234")
+```
+
+```{r}
+boxplot(td_sel$caltech_0051487, outcol = "red", main = "Boxplot for patient asd caltech_0051487")
+```
+
+```{r}
+boxplot(td_sel$trinity_0050259, outcol = "red", main = "Boxplot for patient asd trinity_0050259")
+```
+
+Red points indicate outliers and there are several of them. For this reason we decided to use a type of standardization different from the traditional one (consisting of subtracting and dividing by, respectively, the mean and the standard deviation). One approach to standardize input variables in presence of outliers is to ignore the outliers from the calculation of the mean and standard deviation, then use the calculated values to scale the variables.
+
+This is called *robust standardization* or robust data scaling.
+
+This can be achieved by calculating the median (50th percentile) and the 25th and 75th percentiles. The values of each variable then have their median subtracted and are divided by the interquartile range (IQR) which is the difference between the 75th and 25th percentiles.
+
+Within each group (ASD and TD), standardize the data on a per-lab + per-ROI basis. We compute the median and the IQR along the columns of the two distinct labs and then we use them to center and scale the data.
+
+```{r}
+## Converting inner lists in data.frame
+asd_frame <- lapply(X = asd_sel,FUN = as.data.frame)
+td_frame <- lapply(X = td_sel,FUN = as.data.frame)
+```
+
+```{r}
+## function to standardize a column of a dataset
+stand <- function(j){
+  return((j-median(j))/(quantile(j, prob = 0.75)- quantile(j, prob = 0.25)))
+}
+
+## function to standardize data of a specific lab
+stand2 <- function(j, mediana, IQR){
+  return((j-mediana)/IQR)
+}
+
+## function to compute the median of a column
+compute_med <- function(j){
+  return(median(j))
+}
+
+## function to compute the IQR of a column
+compute_IQR <- function(j){
+  return(quantile(j, prob = 0.75)- quantile(j, prob = 0.25))
+}
+```
+
+```{r}
+## putting together asd lab trinity
+tmp1 <- asd_frame[[2]]
+for (i in 3:length(asd_sel)){
+  tmp1 <- rbind(tmp1,asd_frame[[i]])
+}
+
+## putting together td lab caltech
+tmp2 <- td_frame[[1]]
+tmp2 <- rbind(tmp2,td_frame[[2]])
+
+## putting together td lab trinity
+tmp3 <- td_frame[[3]]
+for (i in 4:length(td_sel)){
+  tmp3 <- rbind(tmp3,td_frame[[i]])
+}
+```
+
+```{r}
+## compute all the medians 
+med_asd_tri <- apply(tmp1,2, compute_med)
+med_td_cal <- apply(tmp2,2, compute_med)
+med_td_tri <- apply(tmp3,2, compute_med)
+
+## compute all the IQRs
+IQR_asd_tri <- apply(tmp1,2, compute_IQR)
+IQR_td_cal <- apply(tmp2,2, compute_IQR)
+IQR_td_tri <- apply(tmp3,2, compute_IQR)
+```
+
+```{r}
+## transform these results in matrices
+med_asd_tri <- matrix(med_asd_tri, nrow = 145 , ncol = 116, byrow = T)
+med_td_cal <- matrix(med_td_cal, nrow = 145 , ncol = 116, byrow = T)
+med_td_tri <- matrix(med_td_tri, nrow = 145 , ncol = 116, byrow = T)
+
+IQR_asd_tri <- matrix(IQR_asd_tri, nrow = 145 , ncol = 116, byrow = T)
+IQR_td_cal <- matrix(IQR_td_cal, nrow = 145 , ncol = 116, byrow = T)
+IQR_td_tri <- matrix(IQR_td_tri, nrow = 145 , ncol = 116, byrow = T)
+```
+
+```{r}
+
+# standardize caltech asd (is only one patient)
+asd_frame[[1]] <- data.frame(apply(asd_frame[[1]], 2, stand))
+
+colnames(asd_frame[[1]]) <- colnames(asd_frame$trinity_0050234)
+
+
+## standardize trinity asd
+for (subject in 2:length(asd_frame)){
+  asd_frame[[subject]] <- (asd_frame[[subject]] - data.frame(med_asd_tri)) / data.frame(IQR_asd_tri)
+}
+
+## standardize caltech td
+
+for (subject in 1:2){
+  td_frame[[subject]] <- (td_frame[[subject]] - data.frame(med_td_cal)) / data.frame(IQR_td_cal)
+}
+
+
+## standardize trinity td
+
+for (subject in 3:length(td_frame)){
+  td_frame[[subject]] <- (td_frame[[subject]] - data.frame(med_td_tri)) / data.frame(IQR_td_tri)
+}
+
+```
+
+We show some standardized rows and ROIs of an asd patient (trinity_0050234)
+
+```{r}
+head(asd_frame$trinity_0050234)[1:5]
+```
+
+We show some standardized rows and ROIs of an td patient (trinity_0050259)
+
+```{r}
+head(td_frame$trinity_0050259)[1:5]
+```
+
+We show an example of the new ranges for 2 asd subjects coming from different laboratories.
+
+```{r}
+range3 <- round(range(asd_frame$caltech_0051472),2)
+range4 <- range(asd_frame$trinity_0050234)
+```
+
+```{r}
+data.frame(min = c(range3[1], range4[1]), max = c(range3[2], range4[2]), row.names = c("range_caltech","range_trinity"))
+```
+
+Now the ranges seem to be similar.
+
+Since we have standardized data, we can pool them in a unique dataset for each group.
+
+## Pool together the data
+
+Now that we have standardized the data, we can go on to the data pooling phase.
+
+We recall that we have 12 subjects per group, namely we have 24 datasets. In the initial setting, we have to deal with a high-dimensional problem because n $\thickapprox$ D and this protocol will not work since $\hat{\Sigma_n}$ is not invertible. There are some solutions to avoid this issue, but we prefer to deal with a low-dimensional problem. Since the time series are iid and the data coming from different subjects may also be considered independent from each other, we simply joined the 12 datasets into one with the same columns(features) (we do this for each group).
+
+```{r}
+total_asd <- asd_frame[[1]]
+for (i in 2:length(asd_sel)){
+  total_asd <- rbind(total_asd,asd_frame[[i]])
+}
+
+total_td <- td_frame[[1]]
+for (i in 2:length(td_sel)){
+  total_td <- rbind(total_td,td_frame[[i]])
+}
+```
+
+**Dimension of the dataset for group ASD**
+
+```{r}
+dim(total_asd)
+```
+
+**Dimension of the dataset for group TD**
+
+```{r}
+dim(total_td)
+```
+
+The output are 2 dataset with 1.740 rows and 116 columns, now we are dealing with a low-dimensional setting because n \>\> D and we can estimate $R[j,k]$ using a transformation of $\hat{\Lambda} = \hat{\Sigma_n}^{-1}$ .
+
+> # Point 2
+
+Our goal is to get two separate estimates, $\hat{G}^{ASD}(t)$ and $\hat{G}^{TD}(t)$ and to do that we need to build the 95% asymptotic confidence intervals for $\{\rho_{j,k}^{ASD}\}_{j,k}$ and $\{\rho_{j,k}^{TD}\}_{j,k}$. The next step will be setting a threshold t equal to a meaningfully high percentile of the correlation values observed in the two groups to build the adjacency matrices for our estimated graphs.
+
+```{r}
+## computing the point estimate of the pearson correlation of asd, td
+ro_asd <-cor(total_asd)
+ro_td <-cor(total_td)
+```
+
+We starting by computing the point estimate for the person correlation of ASD and TD patients.
+
+Here, the first 6 rows of the ASD correlation matrix are shown.
+
+```{r}
+data.frame(head(ro_asd))[,1:5]
+```
+
+We want to show an example of the correlations that are in this matrix. The following plot shows the correlations between the ROI 2002 and all the others.
+
+```{r}
+hist(data.frame(ro_asd)$X2002, col = "orchid", main = "Correlations of ROI 2002", xlab = "coefficient value")
+```
+
+Obviously, the last correlation is between the feature and itself.
+
+Here, the first 6 rows of the TD correlation matrix are shown.
+
+```{r}
+data.frame(head(ro_td))[,1:5]
+```
+
+We want to show an example of the correlations that are in this matrix. The following plot shows the correlations between the ROI 2002 and all the others.
+
+```{r}
+hist(data.frame(ro_td)$X2002, col = "light blue", main = "Correlations of ROI 2002", xlab = "coefficient value")
+```
+
+Obviously, the last correlation is between the feature and itself.
+
+```{r}
+## Fisher Z- transform with Bonferroni correction
+cor.test.p2 <- function(x,bound){
+    FUN <- function(j, k) cor.test(j, k, method = "pearson", conf.level =  1-(0.05/choose(116,2)))$conf.int[bound]
+    z <- outer(
+      colnames(x), 
+      colnames(x), 
+      Vectorize(function(j,k) FUN(x[,j], x[,k]))
+    )
+    dimnames(z) <- list(colnames(x), colnames(x))
+    z
+}
+```
+
+```{r}
+## Lower Bound and Upper Bound of confidence intervals for ASD pearson correlation coefficient
+LB_asd <- cor.test.p2(total_asd, 1)
+UB_asd <- cor.test.p2(total_asd, 2)
+```
+
+**Lower Bound of confidence intervals for ASD pearson correlation coefficient**
+
+```{r}
+data.frame(head(LB_asd))[,1:5]
+```
+
+**Upper Bound of confidence intervals for ASD pearson correlation coefficient**
+
+```{r}
+data.frame(head(UB_asd))[,1:5]
+```
+
+```{r}
+## function to have the CI for the correlation between the j and k feature
+print_conf <- function(lower_bound, upper_bound, j,k)(c(lower_bound[j,k], upper_bound[j,k]))
+```
+
+As example, using a function written by us we show the interval for the coefficent $\{\rho_{2102,2112}^{ASD}\}_{2102,2112}$
+
+```{r}
+print_conf(LB_asd, UB_asd, "2102","2112")
+```
+
+```{r}
+## Lower Bound and Upper Bound of confidence intervals for TD pearson correlation coefficient
+LB_td <- cor.test.p2(total_td, 1)
+UB_td <- cor.test.p2(total_td, 2)
+```
+
+**Lower Bound of confidence intervals for ASD pearson correlation coefficient**
+
+```{r}
+data.frame(head(LB_td))[,1:5]
+```
+
+**Upper Bound of confidence intervals for ASD pearson correlation coefficient**
+
+```{r}
+data.frame(head(UB_td))[,1:5]
+```
+
+As example, using a function written by us we show the interval for the coefficent $\{\rho_{2102,2112}^{TD}\}_{2102,2112}$
+
+```{r}
+print_conf(LB_td, UB_td, "2102","2112")
+```
+
+**Building the adiacency matrices to represent the estimated graphs**
+
+Once we get a (1- $\alpha/m$) confidence interval (where $m = \binom{D}{2}$) $C_{n}^{j,k}(\alpha)$ for $\rho(j,k)$,we can then place an edge between feature $j$ and feature $k$ whenever $[−t,+t] ∩ C_{n}^{j,k}(\alpha)= ∅$(the empty-set).
+
+Remember that since the adjacency matrix is symmetric every edge will appear 2 times in position $j,k$ and position $k,j$ and to the effective number of edges we have to consider only an occurrence.
+
+We set to zero the diagonal to avoid the value of correlation 1 between the feature j and itself.
+
+```{r}
+## Function to create the adjacency matrix for a fixed threshold t
+
+create_adj <- function(LB,UB,t){
+  m <- matrix(0, nrow = nrow(LB), ncol = ncol(LB))
+  m[(-t > UB) | (t < LB)] <- 1
+  diag(m) <- 0 
+  colnames(m) <- colnames(LB)
+  rownames(m) <- rownames(LB)
+  return(m)
+}
+```
+
+Now we have to select a threshold t via trial-and-error using a meaningfully high percentile of the correlation values observed in the two groups.
+
+We starting from the interpretation of the correlation:
+
+Several approaches have been suggested to translate the correlation coefficient into descriptors like "weak," "moderate," or "strong" relationship (see the Table for an example). These cutoff points are arbitrary and inconsistent and should be used judiciously.
+
+```{r pressure, out.width = '100%',eval=FALSE}
+knitr::include_graphics("interpretazione correlazione.jpeg")
+```
+
+We start by showing the quartiles of the two groups, we consider the absolute value of the correlation coefficients.
+
+```{r}
+data.frame(asd = round(quantile(abs(ro_asd), c(0.25,0.50,0.75)),3), td = round(quantile(abs(ro_td), c(0.25,0.50,0.75)),3))
+```
+
+We can see that for both groups the 75% of the correlation values are lower than 0.18 for asd group and lower than 0.19 for td group. It means that for the most part values fall into the category of "weak" correlation. We are interested in setting a meaningfully high value to understand the most correlated ROIs. We create a sequence of percentiles frome 0.75 to 1 and we will select the one that has a correlation values at least equal to 0.5, which is considered as a threshold for a moderate intensity correlation.
+
+```{r}
+data.frame(asd = round(quantile(abs(ro_asd), c(seq(0.75,1,length.out = 11))),3), td = round(quantile(abs(ro_td), c(seq(0.75,1,length.out = 11))),3))
+```
+
+Through the table above we chose the percentile at 97.5% because it corresponds to a threshold greater than 0.5, which is meaningfully high, in our opinion.
+
+We will try to set t two times with a weak correlation threshold, twice with a moderate correlation threshold and twice with the strong correlation threshold. We avoid to use negligible values of correlation and very strong values of correlation because the result will include an excessive number of edges or zero edges to see how the number of edges change.
+
+The selected values are 0.2,0.3, 0.5, 0.6, 0.7, 0.8. We continue showing how the number of edges changes varying t.
+
+```{r}
+## building adjacency matrices for t = 0.20
+adj_asd <- create_adj(LB_asd, UB_asd,0.20)
+adj_td <- create_adj(LB_td, UB_td,0.20)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_asd)/2, edges_td = sum(adj_td)/2, row.names = "t = 0.20" )
+```
+
+```{r}
+## building adjacency matrices for t = 0.30
+adj_asd <- create_adj(LB_asd, UB_asd,0.30)
+adj_td <- create_adj(LB_td, UB_td,0.30)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_asd)/2, edges_td = sum(adj_td)/2,row.names = "t = 0.30")
+```
+
+```{r}
+## building adjacency matrices for t = 0.50
+adj_asd <- create_adj(LB_asd, UB_asd,0.50)
+adj_td <- create_adj(LB_td, UB_td,0.50)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_asd)/2, edges_td = sum(adj_td)/2, row.names = "t = 0.50")
+```
+
+```{r}
+## building adjacency matrices for t = 0.60
+adj_asd <- create_adj(LB_asd, UB_asd,0.60)
+adj_td <- create_adj(LB_td, UB_td,0.60)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_asd)/2, edges_td = sum(adj_td)/2, row.names = "t = 0.60")
+```
+
+```{r}
+## building adjacency matrices for t = 0.70
+adj_asd <- create_adj(LB_asd, UB_asd,0.70)
+adj_td <- create_adj(LB_td, UB_td,0.70)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_asd)/2, edges_td = sum(adj_td)/2, row.names = "t = 0.70")
+```
+
+```{r}
+## building adjacency matrices for t = 0.80
+adj_asd <- create_adj(LB_asd, UB_asd,0.80)
+adj_td <- create_adj(LB_td, UB_td,0.80)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_asd)/2, edges_td = sum(adj_td)/2, row.names = "t = 0.80")
+```
+
+Since our goal is to select a threshold meaningfully high we discarded the weak values of correlation. The strong values of correlation gives us a number of edges too low, few features are highly correlated. We select a threshold such that we can say that exists a moderate intensity of linear dependency between features, our choice is $t = 0.5$
+
+```{r}
+## building adjacency matrices for t = 0.50
+adj_asd <- create_adj(LB_asd, UB_asd,0.50)
+adj_td <- create_adj(LB_td, UB_td,0.50)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_asd)/2, edges_td = sum(adj_td)/2, row.names = "t = 0.50")
+```
+
+With this configuration, using the adjacency matrix, we found 54 edges for asd and 46 edges for td, a little difference in terms of quantities.
+
+We reached the two separate estimate, $\hat{G}^{ASD}(t)$ and $\hat{G}^{TD}(t)$ of the true association graphs and for now we show them through the adjacency matrices.
+
+**Adjacency matrix for $\hat{G}^{ASD}(0.50)$ **
+
+```{r}
+# only 6 rows and 5 columns for the visualization
+
+data.frame(head(adj_asd))[5:10]
+```
+
+**Adjacency matrix for $\hat{G}^{TD}(0.50)$ **
+
+```{r}
+# only 6 rows and 5 columns for the visualization 
+
+data.frame(head(adj_td))[25:30]
+```
+
+> # Point 3
+
+We want to represent the estimated graphs $\hat{G}^{ASD}(0.50)$ and $\hat{G}^{TD}(0.50)$ using igraph and ggraph packages.
+
+```{r}
+g_asd <- graph_from_adjacency_matrix(adj_asd, mode = "undirected", diag = FALSE)
+g_td  <- graph_from_adjacency_matrix(adj_td, mode = "undirected", diag = FALSE)
+```
+
+```{r, echo=FALSE}
+## asd graph with 116 nodes and 54 edges
+g_asd
+```
+
+```{r, echo =FALSE}
+## td graph with 116 nodes and 46 edges
+g_td
+```
+
+```{r}
+# Plot with same aesthetic adjustments as previous
+ggraph(g_asd, layout = 'lgl') +
+  geom_edge_link(colour = "darkturquoise") + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE,max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  ggtitle(TeX(r'($\hat{G}^{ASD}(0.50)$)', bold=TRUE))
+  
+
+```
+
+To reach a better visualization and easily understand the edges among the nodes we want to use another layout.
+
+```{r}
+ggraph(g_asd, layout = 'lgl') +
+  geom_edge_link(colour = "darkturquoise") + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none") 
+
+```
+
+Now we can clearly visualize if two nodes have an edge, which implies the value of the correlation between the two ROIs is greater than 0.5.
+
+```{r}
+# Plot with same aesthetic adjustments as previous
+ggraph(g_td, layout = 'lgl') +
+  geom_edge_link(colour = "orange", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE,max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  ggtitle(TeX(r'($\hat{G}^{TD}(0.50)$)', bold=TRUE))
+
+
+```
+
+To reach a better visualization and easily understand the edges among the nodes we want to use another layout.
+
+```{r}
+ggraph(g_asd, layout = 'lgl') +
+  geom_edge_link(colour = "orange", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none") 
+
+```
+
+Now we can clearly visualize if two nodes have an edge, which implies the value of the correlation between the two ROIs is greater than 0.5.
+
+To draw conclusions and understand if there are clear co-activation differences between the two groups we will to build another graph named $\hat{G}^{\Delta}(t)$ which has an edge between two vertices $j$ and $k$ if $|{\Delta^{j,k}}| = |\rho_{j,k}^{ASD} - \rho_{j,k}^{TD}| \geq t$.
+
+```{r}
+## we estimate the differences between the correlation matrices rho_hat_ASD and rho_hat_TD
+
+ro_diff <- ro_asd - ro_td
+```
+
+```{r}
+## function to build confidence intervals for difference of correlations with Bonferroni correction
+compute_CI_diff2 <- function(ro, n){
+  z <- atanh((ro)/2)    
+  sigma <- 1 / sqrt(n-3)
+  lower <- z - sigma * qnorm((1-(0.05/choose(116,2))/2))
+  upper <- z + sigma * qnorm(1-(0.05/choose(116,2))/2)
+  lower <- tanh(lower)*2
+  upper <- tanh(upper)*2
+  return(list(lower,upper))
+}
+```
+
+```{r}
+ogg2 <- compute_CI_diff2(ro_diff, nrow(total_asd))
+```
+
+```{r}
+lower_diff2 <- ogg2[[1]]
+upper_diff2 <- ogg2[[2]]
+```
+
+We built the confidence interval for the difference between the two groups. In order to estimate the difference graph we set a threshold that indicates when the co-activation differences are relevant. The threshold t, in this case, is not a correlation value, but an index in the range [0,2] (the maximum difference can be 2). Using again the trial and error approach we are going to explore the change of the graph configuration varying the threshold t.
+
+Once we get a (1- $\alpha/m$) confidence interval (where $m = \binom{D}{2}$) $C_{n}^{j,k}(\alpha)$ for $\rho(j,k)$,we can then place an edge between feature $j$ and feature $k$ whenever $[-t,t] ∩ C_{n}^{j,k}(\alpha)= ∅$(the empty-set).
+
+Now, we show how many edges are formed using a high enough value of t.
+
+```{r}
+adj_difft1 <- create_adj(lower_diff2,upper_diff2, 1.5)
+adj_difft2 <- create_adj(lower_diff2,upper_diff2, 1.35)
+adj_difft3 <- create_adj(lower_diff2,upper_diff2, 1.2)
+adj_difft4 <- create_adj(lower_diff2,upper_diff2, 1)
+adj_difft5 <- create_adj(lower_diff2,upper_diff2, 0.8)
+adj_difft6 <- create_adj(lower_diff2,upper_diff2, 0.5)
+adj_difft7 <- create_adj(lower_diff2,upper_diff2, 0.3)
+adj_difft8 <- create_adj(lower_diff2,upper_diff2, 0.2)
+```
+
+```{r}
+data.frame(number_of_edges_diff = c(sum(adj_difft1)/2,
+                          sum(adj_difft2)/2,
+                          sum(adj_difft3)/2,
+                          sum(adj_difft4)/2,
+                          sum(adj_difft5)/2,
+                          sum(adj_difft6)/2,
+                          sum(adj_difft7)/2,
+                          sum(adj_difft8)/2),row.names = c("t = 1.5",
+                                        "t = 1.35",
+                                        "t = 1.2",
+                                        "t = 1",
+                                        "t = 0.8",
+                                        "t = 0.5",
+                                        "t = 0.3",
+                                        "t = 0.2"))
+```
+
+Although the range of t is $[0,2]$ we can see that for a big t value there aren't edges that indicates a clear co-activation difference between ASD and TD patients. If we decrease the threshold to 0.2 we have the first two edges that indicates a difference.
+
+```{r}
+g_difft8 <- graph_from_adjacency_matrix(adj_difft8, mode = "undirected", diag = FALSE)
+g_difft8
+```
+
+```{r}
+ggraph(g_difft8, layout = 'fr') +
+  geom_edge_link(colour = "blue", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Difference Graph using t = 0.20 \n \n")
+
+```
+
+In the graph above we are visualizing the only 2 differences using confidence intervals built with $t = 0.2$. We can say that between ASD and TD patients the ROI co-activations that show a difference are 9062--9082 and 9071--9082.
+
+To recognize the most relevant differences we have to further decrease the threshold because we noticed that, building confidence intervals with Bonferroni Correction, there are no big differences between the two groups in terms of correlations. We want to show the 20 most relevant differences and the associated ROIs. After doing some tests we discovered that the threshold that we have to use is 0.0822.
+
+```{r}
+adj_diff2 <- create_adj(lower_diff2,upper_diff2, 0.0822)
+```
+
+```{r}
+data.frame(number_of_edges_diff = sum(adj_diff2)/2 , row.names = "t = 0.0822")
+```
+
+```{r}
+g_diff2  <- graph_from_adjacency_matrix(adj_diff2, mode = "undirected", diag = FALSE)
+
+ggraph(g_diff2, layout = 'fr') +
+  geom_edge_link(colour = "magenta", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("20 most relevant differences \n")
+```
+
+Here we can see the 20 most relevant differences in terms of co-activation.
+
+```{r}
+g_diff2
+```
+
+If instead of selecting the threshold based on the 20 most relevant correlations we wanted to use percentiles again, we would need to use a statistical measure that indicates a threshold for which the difference is relevant, based on its own distribution. We decide to opt for the median which cuts the distribution in two equal parts, so we consider relevant all the differences that are on the right of this measure.
+
+Visualizing the distribution of absolute differences between the correlation values of ASD and TD and the median.
+
+```{r}
+hist(abs(ro_diff), col = "lightblue", xlab = "median = 0.061", main = "Hist of |rho_asd - rho_td|")
+abline(v = median(abs(ro_diff)), col = "red", lwd = 2)
+```
+
+```{r}
+adj_diff_med <- create_adj(lower_diff2,upper_diff2, median(abs(ro_diff)))
+```
+
+```{r}
+data.frame(number_of_edges_diff = sum(adj_diff_med)/2 , row.names = "t = 0.061")
+```
+
+```{r}
+g_diff_med  <- graph_from_adjacency_matrix(adj_diff_med, mode = "undirected", diag = FALSE)
+
+g_diff_med_plot <- ggraph(g_diff_med, layout = 'fr') +
+  geom_edge_link(colour = "gold", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Difference graph ( t = 0.061 ) \n")
+
+g_diff_med_plot
+```
+
+In the graph above are represented the 40 differences that are relevant for the median chosen as threshold.
+
+As we did in the case of differences between correlations, we want to raise the threshold t to understand even on individual graphs which connections are most resilient in terms of co-activation correlations. Let's start the competition!
+
+```{r, out.width = '50%', fig.align='center'}
+knitr::include_graphics("interpretazione correlazione.jpeg")
+```
+
+### The last one to die (ASD)
+
+We start from the threshold that we previously chose, namely 0.50. Our purpose is to reach the three most resilient connections for the two groups.
+
+```{r}
+adj_asd_ones1 <- create_adj(LB_asd, UB_asd,0.55)
+adj_asd_ones2 <- create_adj(LB_asd, UB_asd,0.60)
+adj_asd_ones3 <- create_adj(LB_asd, UB_asd,0.65)
+adj_asd_ones4 <- create_adj(LB_asd, UB_asd,0.70)
+adj_asd_ones5 <- create_adj(LB_asd, UB_asd,0.75)
+adj_asd_ones6 <- create_adj(LB_asd, UB_asd,0.80)
+```
+
+```{r}
+data.frame(number_of_resilient = c(sum(adj_asd_ones1)/2,
+                          sum(adj_asd_ones2)/2,
+                          sum(adj_asd_ones3)/2,
+                          sum(adj_asd_ones4)/2,
+                          sum(adj_asd_ones5)/2,
+                          sum(adj_asd_ones6)/2),
+                          row.names = c("t = 0.55",
+                                        "t = 0.60",
+                                        "t = 0.65",
+                                        "t = 0.70",
+                                        "t = 0.75",
+                                        "t = 0.8"
+                                        ))
+```
+
+And searching between 0.70 and 0.75 we discovered that...
+
+```{r}
+adj_asd_ones <- create_adj(LB_asd, UB_asd,0.725)
+```
+
+```{r}
+data.frame(number_of_resilient = sum(adj_asd_ones)/2,
+                          row.names = "t = 0.725")
+```
+
+```{r}
+g_ones_asd  <- graph_from_adjacency_matrix(adj_asd_ones, mode = "undirected", diag = FALSE)
+
+ggraph(g_ones_asd, layout = 'fr') +
+  geom_edge_link(colour = "red", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Graph of the 3 most resilient (ASD) \n")
+```
+
+```{r}
+barplot(c(0.73,0.76,0.715), names.arg = c("8111-8112","5001-5002","9032-9022"), col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking last ones to die (ASD)")
+```
+
+The first position is taken by the connection between ROI 5001 and ROI 5002.
+
+### The last one to die (TD)
+
+We start from the threshold that we previously chose, namely 0.50. Our purpose is to reach the three most resilient connections for the two groups.
+
+```{r}
+adj_td_ones1 <- create_adj(LB_td, UB_td,0.55)
+adj_td_ones2 <- create_adj(LB_td, UB_td,0.60)
+adj_td_ones3 <- create_adj(LB_td, UB_td,0.65)
+adj_td_ones4 <- create_adj(LB_td, UB_td,0.70)
+adj_td_ones5 <- create_adj(LB_td, UB_td,0.75)
+adj_td_ones6 <- create_adj(LB_td, UB_td,0.80)
+```
+
+```{r}
+data.frame(number_of_resilient = c(sum(adj_td_ones1)/2,
+                          sum(adj_td_ones2)/2,
+                          sum(adj_td_ones3)/2,
+                          sum(adj_td_ones4)/2,
+                          sum(adj_td_ones5)/2,
+                          sum(adj_td_ones6)/2),
+                          row.names = c("t = 0.55",
+                                        "t = 0.60",
+                                        "t = 0.65",
+                                        "t = 0.70",
+                                        "t = 0.75",
+                                        "t = 0.8"
+                                        ))
+```
+
+And searching between 0.70 and 0.75 we discovered that...
+
+```{r}
+adj_td_ones <- create_adj(LB_td, UB_td,0.7362)
+```
+
+```{r}
+data.frame(number_of_resilient = sum(adj_td_ones)/2,
+                          row.names = "t = 0.7362")
+```
+
+```{r}
+g_ones_td  <- graph_from_adjacency_matrix(adj_td_ones, mode = "undirected", diag = FALSE)
+
+ggraph(g_ones_td, layout = 'fr') +
+  geom_edge_link(colour = "red", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Graph of the 3 most resilient (TD) \n")
+```
+
+```{r}
+barplot(c(0.737,0.738,0.736), names.arg = c("4001-4002","5001-5002","5011-5012"), col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking last ones to die (TD)")
+```
+
+The first position is taken again by the connection between ROI 5001 and ROI 5002. It is the most resilient in both groups.
+
+### Fisher without Bonferroni
+
+```{r}
+## Without Bonferroni correction
+compute_CI_diff_w <- function(ro, n){
+  z <- atanh((ro)/2)
+  sigma <- 1 / sqrt(n-3)
+  lower <- z - sigma * qnorm((1-(0.05/2)))
+  upper <- z + sigma * qnorm(1-(0.05/2))
+  lower <- tanh(lower)*2
+  upper <- tanh(upper)*2
+  return(list(lower,upper))
+}
+```
+
+```{r}
+## lower and upper bounds for all the correlations
+ogg_w <- compute_CI_diff_w(ro_diff, nrow(total_asd))
+
+ogg_asd_w <- compute_CI_diff_w(ro_asd, nrow(total_asd))
+
+ogg_td_w <- compute_CI_diff_w(ro_td, nrow(total_asd))
+```
+
+```{r}
+## splitting lower and upper bound
+
+lower_diff_w <- ogg_w[[1]]
+upper_diff_w <- ogg_w[[2]]
+
+lower_asd_w <- ogg_asd_w[[1]]
+upper_asd_w <- ogg_asd_w[[2]]
+
+lower_td_w <- ogg_td_w[[1]]
+upper_td_w <- ogg_td_w[[2]]
+```
+
+We built the confidence interval for the difference between the two groups. In order to estimate the difference graph we set a threshold that indicates when the co-activation differences are relevant. The threshold t, in this case, is not a correlation value, but an index in the range [0,2] (the maximum difference can be 2). Using again the trial and error approach we are going to explore the change of the graph configuration varying the threshold t.
+
+Once we get a (1- $\alpha/m$) confidence interval (where $m = \binom{D}{2}$) $C_{n}^{j,k}(\alpha)$ for $\rho(j,k)$,we can then place an edge between feature $j$ and feature $k$ whenever $[-t,t] ∩ C_{n}^{j,k}(\alpha)= ∅$(the empty-set).
+
+Now, we show how many edges are formed using a high enough value of t.
+
+```{r}
+adj_diff_t1 <- create_adj(lower_diff_w,upper_diff_w, 1.5)
+adj_diff_t2 <- create_adj(lower_diff_w,upper_diff_w, 1.35)
+adj_diff_t3 <- create_adj(lower_diff_w,upper_diff_w, 1.2)
+adj_diff_t4 <- create_adj(lower_diff_w,upper_diff_w, 1)
+adj_diff_t5 <- create_adj(lower_diff_w,upper_diff_w, 0.8)
+adj_diff_t6 <- create_adj(lower_diff_w,upper_diff_w, 0.5)
+adj_diff_t7 <- create_adj(lower_diff_w,upper_diff_w, 0.3)
+adj_diff_t8 <- create_adj(lower_diff_w,upper_diff_w, 0.2)
+```
+
+```{r}
+data.frame(number_of_edges_diff = c(sum(adj_diff_t1)/2,
+                          sum(adj_diff_t2)/2,
+                          sum(adj_diff_t3)/2,
+                          sum(adj_diff_t4)/2,
+                          sum(adj_diff_t5)/2,
+                          sum(adj_diff_t6)/2,
+                          sum(adj_diff_t7)/2,
+                          sum(adj_diff_t8)/2),row.names = c("t = 1.5",
+                                        "t = 1.35",
+                                        "t = 1.2",
+                                        "t = 1",
+                                        "t = 0.8",
+                                        "t = 0.5",
+                                        "t = 0.3",
+                                        "t = 0.2"))
+```
+
+The first thing that we notice is that here the differences are more relevant. With Bonferroni correction previously we had only two differences with a threshold $t = 0.20$, but now we have 20 more edges. There are also 2 differences that are resulting as resilient to the threshold $0.3$
+
+Although the range of t is $[0,2]$ we can see that for a big t value there aren't edges that indicates a clear co-activation difference between ASD and TD patients. If we decrease the threshold to 0.3 we have the first two edges that indicates a difference.
+
+```{r}
+g_diff_t8 <- graph_from_adjacency_matrix(adj_diff_t8, mode = "undirected", diag = FALSE)
+g_diff_t8
+```
+
+```{r}
+ggraph(g_diff_t8, layout = 'fr') +
+  geom_edge_link(colour = "blue", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Difference Graph using t = 0.20 \n \n")
+
+```
+
+In the graph above we are visualizing the only 22 differences using confidence intervals built with $t = 0.2$ without Bonferroni correction. We can see also graphically that the number of edges is increased.
+
+To recognize the most relevant differences we have to further decrease the threshold because we noticed that, building confidence intervals also without Bonferroni Correction, there are no big differences between the two groups in terms of correlations. We want to show the 20 most relevant differences and the associated ROIs, but first we want to use the t previously selected in the Bonferroni case to show what happens if we skip this step.
+
+```{r}
+adj_diff_2 <- create_adj(lower_diff_w,upper_diff_w, 0.0822)
+```
+
+```{r}
+data.frame(number_of_edges_diff = sum(adj_diff_2)/2 , row.names = "t = 0.0822")
+```
+
+For this t we had 20 edges, now we have 439 relevant differences. Let's plot them!
+
+```{r}
+g_diff_2  <- graph_from_adjacency_matrix(adj_diff_2, mode = "undirected", diag = FALSE)
+
+ggraph(g_diff_2, layout = 'fr') +
+  geom_edge_link(colour = "magenta", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Difference Graph  ( t = 0.0822 ) \n")
+```
+
+Now we want to find the t such that we recognize only 20 relevant differences. After doing some tests we discovered that the threshold that we have to use is 0.20225.
+
+```{r}
+adj_diff_2 <- create_adj(lower_diff_w,upper_diff_w, 0.20225)
+```
+
+```{r}
+data.frame(number_of_edges_diff = sum(adj_diff_2)/2 , row.names = "t = 0.20225")
+```
+
+```{r}
+g_diff_2  <- graph_from_adjacency_matrix(adj_diff_2, mode = "undirected", diag = FALSE)
+
+ggraph(g_diff_2, layout = 'fr') +
+  geom_edge_link(colour = "violetred2", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Difference Graph with the 20 most relevant differences \n")
+```
+
+Here we can see the 20 most relevant differences without Bonferroni correction.
+
+```{r}
+g_diff_2
+```
+
+### Using median
+
+If instead of selecting the threshold based on the 20 most relevant correlations we wanted to use percentiles again, we would need to use a statistical measure that indicates a threshold for which the difference is relevant, based on its own distribution. We decide to opt for the median which cuts the distribution in two equal parts, so we consider relevant all the differences that are on the right of this measure.
+
+```{r}
+adj_diff_med_without <- create_adj(lower_diff_w,upper_diff_w, median(abs(ro_diff)))
+```
+
+```{r}
+data.frame(number_of_edges_diff = sum(adj_diff_med_without)/2 , row.names = "t = 0.061")
+```
+
+We observe that for the threshold 0.061 that is the median of the correlation differences the edges now are 700 whereas previously they were only 40. Always remember that given we're not controlling for multiplicity, it doesn't make *any* statistical sense to comment about the overall topology of the graph. In other words, we can comment on the presence or not of a single edge, but not on the co-occurrence of edges in the graph (...at the required 95% confidence level!).
+
+```{r}
+g_diff_med_without  <- graph_from_adjacency_matrix(adj_diff_med_without, mode = "undirected", diag = FALSE)
+
+ggraph(g_diff_med_without, layout = 'fr') +
+  geom_edge_link(colour = "salmon1", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none") 
+```
+
+In the graph above are represented the 700 differences that are relevant for the median chosen as threshold.
+
+As we did in the case of differences between correlations, we want to raise the threshold t to understand even on individual graphs which connections are most resilient in terms of co-activation correlations without Bonferroni Correction. Let's start the competition!
+
+```{r, out.width = '50%', fig.align='center'}
+knitr::include_graphics("Ranking.jpeg")
+```
+
+### The last one to die (ASD)
+
+We start from the threshold that we previously chose, namely 0.50. Our purpose is to reach the three most resilient connections for the two groups.
+
+```{r}
+adj_asd_ones1_w <- create_adj(lower_asd_w, upper_asd_w,0.55)
+adj_asd_ones2_w <- create_adj(lower_asd_w, upper_asd_w,0.60)
+adj_asd_ones3_w <- create_adj(lower_asd_w, upper_asd_w,0.65)
+adj_asd_ones4_w <- create_adj(lower_asd_w, upper_asd_w,0.70)
+adj_asd_ones5_w <- create_adj(lower_asd_w, upper_asd_w,0.75)
+adj_asd_ones6_w <- create_adj(lower_asd_w, upper_asd_w,0.80)
+```
+
+```{r}
+data.frame(number_of_resilient = c(sum(adj_asd_ones1_w)/2,
+                          sum(adj_asd_ones2_w)/2,
+                          sum(adj_asd_ones3_w)/2,
+                          sum(adj_asd_ones4_w)/2,
+                          sum(adj_asd_ones5_w)/2,
+                          sum(adj_asd_ones6_w)/2),
+                          row.names = c("t = 0.55",
+                                        "t = 0.60",
+                                        "t = 0.65",
+                                        "t = 0.70",
+                                        "t = 0.75",
+                                        "t = 0.8"
+                                        ))
+```
+
+We discover that the three most resilient connections are spotted using a threshold equal to 0.70.
+
+```{r}
+adj_asd_ones_w <- create_adj(lower_asd_w, upper_asd_w, 0.7)
+```
+
+```{r}
+data.frame(number_of_resilient = sum(adj_asd_ones_w)/2,
+                          row.names = "t = 0.7")
+```
+
+```{r}
+g_ones_asd_w  <- graph_from_adjacency_matrix(adj_asd_ones_w, mode = "undirected", diag = FALSE)
+
+ggraph(g_ones_asd_w, layout = 'fr') +
+  geom_edge_link(colour = "red", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Graph of the 3 most resilient (ASD)  \n")
+```
+
+
+```{r}
+barplot(c(0.71,0.74,0.70), names.arg = c("8111-8112","5001-5002","9032-9022"), col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking last ones to die (ASD)")
+```
+
+Without Bonferroni correction the ranking is the same and the first position is taken again by the connection between ROI 5001 and ROI 5002.
+
+### The last one to die (TD)
+
+We start from the threshold that we previously chose, namely 0.50. Our purpose is to reach the three most resilient connections for the two groups.
+
+```{r}
+adj_td_ones1_w <- create_adj(lower_td_w, upper_td_w,0.55)
+adj_td_ones2_w <- create_adj(lower_td_w, upper_td_w,0.60)
+adj_td_ones3_w <- create_adj(lower_td_w, upper_td_w,0.65)
+adj_td_ones4_w <- create_adj(lower_td_w, upper_td_w,0.70)
+adj_td_ones5_w <- create_adj(lower_td_w, upper_td_w,0.75)
+adj_td_ones6_w <- create_adj(lower_td_w, upper_td_w,0.80)
+```
+
+```{r}
+data.frame(number_of_resilient = c(sum(adj_td_ones1_w)/2,
+                          sum(adj_td_ones2_w)/2,
+                          sum(adj_td_ones3_w)/2,
+                          sum(adj_td_ones4_w)/2,
+                          sum(adj_td_ones5_w)/2,
+                          sum(adj_td_ones6_w)/2),
+                          row.names = c("t = 0.55",
+                                        "t = 0.60",
+                                        "t = 0.65",
+                                        "t = 0.70",
+                                        "t = 0.75",
+                                        "t = 0.8"
+                                        ))
+```
+
+And searching between 0.70 and 0.75 we discovered that...
+
+```{r}
+adj_td_ones_w <- create_adj(lower_td_w, upper_td_w,0.7005)
+```
+
+```{r}
+data.frame(number_of_resilient = sum(adj_td_ones_w)/2,
+                          row.names = "t = 0.7005")
+```
+
+```{r}
+g_ones_td_w  <- graph_from_adjacency_matrix(adj_td_ones_w, mode = "undirected", diag = FALSE)
+
+ggraph(g_ones_td_w, layout = 'fr') +
+  geom_edge_link(colour = "red", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Graph of the 3 most resilient (TD)  \n")
+```
+
+```{r}
+barplot(c(0.702,0.74,0.70), names.arg = c("4001-4002","5001-5002","5011-5012"), col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking last ones to die (TD)")
+```
+
+The first position is taken again by the connection between ROI 5001 and ROI 5002. It is the most resilient in both groups also without Bonferroni.
+
+> # Point 4
+
+## Partial correlations
+
+We want to repeat the analysis using the partial correlation coefficient. Since we are dealing with a low-dimensional setting ($D < n = 1740$) we can estimate $R_{(p)}$ as follows. Let $\hat{\Sigma_n}$ be the sample covariance and $\hat{\Lambda} = \hat{\Sigma_n}^{-1}$ its inverse, we can define : 
+$\hat{R}_{(p)}[j,k] = \hat{\rho}_{j,k}^{(p)} = -\frac{\hat{\Lambda}_{j,k}}{\sqrt{\hat{\Lambda_{j,j}} * \hat{\Lambda_{k,k}}}}$. 
+We implemented by hand this method and then we use the library ppcor, in particular, the function pcor to compare the results.
+
+### Partial correlation (ASD)
+
+```{r}
+# inverse of variance-covariance of asd 
+Lambda_asd <- solve(cov(total_asd))
+```
+
+```{r}
+# partial correlation matrix of asd
+Ro_partial_asd <- -Lambda_asd/sqrt(as.matrix(diag(Lambda_asd)) %*% t(as.matrix(diag(Lambda_asd))))
+
+diag(Ro_partial_asd) <- 1
+```
+
+We show the first 6 rows and 5 columns of the partial correlation matrix of asd patients.
+
+```{r}
+head(data.frame(round(Ro_partial_asd,3)))[1:5]
+```
+
+We repeat the computation with the function pcor and we compare the elements inside the matrices. Below wa can see that the partial correlation values coincide.
+
+```{r, warning=FALSE}
+head(data.frame(data.frame(round(Ro_partial_asd,3)) == data.frame(round(pcor(total_asd)$estimate,3))),10)[1:5]
+```
+
+### Partial correlation (TD)
+
+```{r}
+# inverse of variance-covariance of td
+Lambda_td <- solve(cov(total_td))
+```
+
+```{r}
+# partial correlation matrix of asd
+Ro_partial_td <- -Lambda_td/sqrt(as.matrix(diag(Lambda_td)) %*% t(as.matrix(diag(Lambda_td))))
+
+diag(Ro_partial_td) <- 1
+```
+
+We show the first 6 rows and 5 columns of the partial correlation matrix of td patients.
+
+```{r}
+head(data.frame(round(Ro_partial_td,3)))[1:5]
+```
+
+We repeat the computation with the function pcor and we compare the elements inside the matrices. Below we can see that the partial correlation values coincide.
+
+```{r, warning=FALSE}
+head(data.frame(data.frame(round(Ro_partial_td,3)) == data.frame(round(pcor(total_td, method = "pearson")$estimate,3))),10)[1:5]
+```
+
+### Partial correlation differences (rhoASD - rhoTD)
+
+```{r}
+Ro_partial_diff <-Ro_partial_asd - Ro_partial_td
+```
+
+We show the first 6 rows and 5 columns of the partial correlation matrix of differences.
+
+```{r}
+head(data.frame(round(Ro_partial_diff,3)))[1:5]
+```
+
+```{r}
+# we have to modify the function to compute the confidence intervals with Fisher Z-transform beacuse we must include g = D-2 in the scheme.
+
+# With Bonferroni correction
+
+compute_partial_CI <- function(ro, n){
+  z <- atanh((ro)/2)
+  D <- ncol(ro)
+  g <- D-2
+  sigma <- 1 / sqrt(n-g-3)
+  lower <- z - sigma * qnorm((1-(0.05/choose(116,2))/2))
+  upper <- z + sigma * qnorm(1-(0.05/choose(116,2))/2)
+  lower <- tanh(lower)*2
+  upper <- tanh(upper)*2
+  return(list(lower,upper))
+}
+
+```
+
+```{r}
+ogg_par_asd <- compute_partial_CI(Ro_partial_asd, nrow(total_asd))
+ogg_par_td <- compute_partial_CI(Ro_partial_td, nrow(total_asd))
+ogg_par_diff <- compute_partial_CI(Ro_partial_diff, nrow(total_asd))
+
+lower_par_asd <- ogg_par_asd[[1]]
+upper_par_asd <- ogg_par_asd[[2]]
+
+lower_par_td <- ogg_par_td[[1]]
+upper_par_td <- ogg_par_td[[2]]
+
+lower_par_diff <- ogg_par_diff[[1]]
+upper_par_diff <- ogg_par_diff[[2]]
+```
+
+We have to build the estimated graphs and to represent them, we use the adjacency matrices. We used the same threshold previously chosen (0.50) to compare the results and show the first difference.
+
+```{r}
+## building adjacency matrices for t = 0.50
+adj_par_asd <- create_adj(lower_par_asd, upper_par_asd,0.50)
+adj_par_td <- create_adj(lower_par_td, upper_par_td,0.50)
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_par_asd)/2, edges_td = sum(adj_par_td)/2, row.names = "t = 0.50")
+```
+
+We can see that using a threshold of 0.50 there aren't edges. The partial correlation of each pair of variables given the others measures the linear association between the two ROIs after removing the effect of the confounders (all the other ROIs). Since here there are no edges with the same threshold t (0.50) we can say that the previous correlation values and consequently formed edges are inflated by the effect of the remaining ROIs. Now, we try to represent all edges which are formed on the assumption that the corresponding Bonferroni-adjusted 95% confidence interval does not contain the value 0. We set $t =0$ and then we will start setting a meaningfully high percentile of the partial correlation values observed.
+
+```{r}
+## building adjacency matrices for t = 0.0
+adj_par_asd0 <- create_adj(lower_par_asd, upper_par_asd,0)
+adj_par_td0 <- create_adj(lower_par_td, upper_par_td,0)
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_par_asd0)/2, edges_td = sum(adj_par_td0)/2, row.names = "t = 0.00")
+```
+
+We can see that there are only about 130 edges and now we want to show the respective graphs.
+
+```{r}
+g_asd0 <- graph_from_adjacency_matrix(adj_par_asd0, mode = "undirected", diag = FALSE)
+
+ggraph(g_asd0, layout = "fr") +
+  geom_edge_link(colour = "orchid", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  ggtitle("All ASD edges (t = 0)\n")
+
+```
+
+We are represented the only association edges that are based on confidence intervals that don't include 0 as possible value of correlation for asd group.
+
+```{r,eval=FALSE}
+g_td0  <- graph_from_adjacency_matrix(adj_par_td0, mode = "undirected", diag = FALSE)
+
+ggraph(adj_par_td0,layout = 'lgl') +
+  geom_edge_link(colour = "green", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("All TD edges ( t = 0 ) \n")
+```
+
+We are represented the only association edges that are based on confidence intervals that don't include 0 as possible value of correlation for td group.
+
+Now, we are going to select the threshold t for the partial case.
+
+We start by showing the quartiles of the two groups, we consider the absolute value of the partial correlation coefficients.
+
+```{r}
+data.frame(asd = round(quantile(abs(Ro_partial_asd), c(0.25,0.50,0.75)),3), td = round(quantile(abs(Ro_partial_td), c(0.25,0.50,0.75)),3))
+```
+
+We can see that for both groups the 75% of the partial correlation values are lower than 0.081 for asd group and lower than 0.083 for td group. It means that for the most part values fall into the category of "negligible" correlation. We are interested in setting a meaningfully high value to understand the most correlated ROIs, but we are aware that they can also be very low. We create a sequence of percentiles from 0.75 to 1 and we will select the one that has a correlation values at least equal to 0.2, because we already know that aren't edges for a moderate threshold.
+
+```{r}
+data.frame(asd = round(quantile(abs(Ro_partial_asd), c(seq(0.75,1,length.out = 11))),3), td = round(quantile(abs(Ro_partial_td), c(seq(0.75,1,length.out = 11))),3))
+```
+
+Through the table above we chose the percentile at 97.5% because it corresponds to a threshold greater than 0.23, which is enough to identify moderate-weak correlations.
+
+We will build the adjacency matrices in order to graphically represent the estimated graphs
+
+```{r}
+## building adjacency matrices for t = 0.50
+adj_par_asd_opt <- create_adj(lower_par_asd, upper_par_asd,0.23)
+adj_par_td_opt <- create_adj(lower_par_td, upper_par_td,0.23)
+
+```
+
+```{r}
+data.frame(edges_asd = sum(adj_par_asd_opt)/2, edges_td = sum(adj_par_td_opt)/2, row.names = "t = 0.23")
+```
+
+With this configuration, using the adjacency matrix, we found 9 edges for asd and 9 edges for td.
+
+We reached the two separate estimates, $\hat{G}^{ASD}(0.23)$ and $\hat{G}^{TD}(0.23)$ and now we want to graphically represent them using igraph and ggraph packages.
+
+```{r}
+g_asd_par_opt <- graph_from_adjacency_matrix(adj_par_asd_opt, mode = "undirected", diag = FALSE)
+g_td_par_opt  <- graph_from_adjacency_matrix(adj_par_td_opt, mode = "undirected", diag = FALSE)
+```
+
+```{r, echo=FALSE}
+## asd graph with 116 nodes and 9 edges
+g_asd_par_opt
+```
+
+```{r, echo =FALSE}
+## td graph with 116 nodes and 9 edges
+g_td_par_opt
+```
+
+```{r,eval=FALSE}
+ggraph(adj_par_asd_opt, layout = 'fr') +
+  geom_edge_link(colour = "steelblue3", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  ggtitle(TeX(r'($\hat{G}^{ASD}(0.23)$)', bold=TRUE))
+
+```
+
+Now we can clearly visualize if two asd nodes have an edge, which implies the value of the correlation between the two ROIs is greater than 0.23.
+
+```{r,eval=FALSE}
+ggraph(adj_par_td_opt, layout = 'kk') +
+  geom_edge_link(colour = "tomato1", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  ggtitle(TeX(r'($\hat{G}^{TD}(0.23)$)', bold=TRUE))
+
+```
+
+Now we can clearly visualize if two td nodes have an edge, which implies the value of the correlation between the two ROIs is greater than 0.23.
+
+We wanted to use percentiles again,and we use a statistical measure that indicates a threshold for which the difference is relevant, based on its own distribution. We decide to opt for the median which cuts the distribution in two equal parts, so we consider relevant all the differences that are on the right of this measure.
+
+Visualizing the distribution of absolute differences between the partial correlation values of ASD and TD and the median.
+
+```{r}
+hist(abs(Ro_partial_diff), col = "orchid1", xlab = "median = 0.056", main = "Hist of |partial_rho_asd - partial_rho_td|")
+abline(v = median(abs(Ro_partial_diff)), col = "black", lwd = 2)
+```
+
+We build the adjacency matrix and we show the number of edges of this configuration.
+
+```{r}
+adj_diff_med_par <- create_adj(lower_par_diff,upper_par_diff, median(abs(Ro_partial_diff)))
+```
+
+```{r}
+data.frame(number_of_edges_diff = sum(adj_diff_med_par)/2 , row.names = "t = 0.056")
+```
+
+We want to represent graphically these co-activation differences:
+
+```{r}
+g_diff_med_par  <- graph_from_adjacency_matrix(adj_diff_med_par, mode = "undirected", diag = FALSE)
+
+ggraph(g_diff_med_par, layout = 'fr') +
+  geom_edge_link(colour = "gold", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none") 
+```
+
+The following are the only resulting edges:
+
+```{r}
+g_diff_med_par
+```
+
+```{r}
+## graph correlation differences threshold median 
+
+p_one <- ggraph(g_diff_med, layout = 'fr') +
+  geom_edge_link(colour = "gold", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5))+
+  theme(plot.title = element_text(colour = "#7F3D17"))+
+  ggtitle("Correlation Differences \n")
+
+## graph partial correlation differences threshold median 
+p_two <- ggraph(g_diff_med_par, layout = 'fr') +
+  geom_edge_link(colour = "gold", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  theme(plot.title = element_text(colour = "#7F3D17"))+
+  ggtitle("Partial Correlation Differences \n")
+
+
+grid.arrange(p_one,p_two, ncol = 2)
+```
+
+We can see that the number of edges concerning the partial correlations that are formed using the median as threshold are lower than the number of edges concerning the correlation coefficient. Again we can affirm that the pairwise ROI's correlation given all the others are lower than the the pairwise correlation considering the effect of he other variables(ROIs).
+
+Now, we want to repeat the "competition" among ROIs using the partial correlation coefficient to spot what are the last connections to die, the more "resilient". Let's start the competition!
+
+```{r, out.width = '50%', fig.align='center'}
+knitr::include_graphics("Ranking.jpeg")
+```
+
+### The last one to die (ASD)
+
+We start from the threshold that we previously chose, namely 0.23. Our purpose is to reach the three most resilient connections for the two groups.
+
+```{r}
+adj_asd_ones1_par <- create_adj(lower_par_asd, upper_par_asd,0.23)
+adj_asd_ones2_par <- create_adj(lower_par_asd, upper_par_asd,0.26)
+adj_asd_ones3_par <- create_adj(lower_par_asd, upper_par_asd,0.30)
+adj_asd_ones4_par <- create_adj(lower_par_asd, upper_par_asd,0.33)
+adj_asd_ones5_par <- create_adj(lower_par_asd, upper_par_asd,0.37)
+adj_asd_ones6_par <- create_adj(lower_par_asd, upper_par_asd,0.40)
+```
+
+```{r}
+data.frame(number_of_resilient = c(sum(adj_asd_ones1_par)/2,
+                          sum(adj_asd_ones2_par)/2,
+                          sum(adj_asd_ones3_par)/2,
+                          sum(adj_asd_ones4_par)/2,
+                          sum(adj_asd_ones5_par)/2,
+                          sum(adj_asd_ones6_par)/2),
+                          row.names = c("t = 0.23",
+                                        "t = 0.26",
+                                        "t = 0.30",
+                                        "t = 0.33",
+                                        "t = 0.37",
+                                        "t = 0.40"))
+```
+
+We discovered that to identify the most three resilient values we have to set the threshold at 0.30
+
+```{r}
+adj_asd_ones_par <- create_adj(lower_par_asd, upper_par_asd,0.3)
+```
+
+```{r}
+data.frame(number_of_resilient = sum(adj_asd_ones_par)/2,
+                          row.names = "t = 0.3")
+```
+
+```{r}
+g_ones_asd_par  <- graph_from_adjacency_matrix(adj_asd_ones_par, mode = "undirected", diag = FALSE)
+
+ggraph(g_ones_asd_par, layout = 'fr') +
+  geom_edge_link(colour = "violet", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Graph of the 3 most resilient (ASD)  \n")
+```
+
+### Last to die (ASD)
+
+```{r, fig.keep='all'}
+par(mfrow= c(1,2))
+
+barplot(c(0.73,0.76,0.715), names.arg = c("8111-8112","5001-5002","9032-9022"), cex.names = 0.7, col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking correlation (ASD) \n")
+
+barplot(c(0.35,0.38,0.31), names.arg = c("5011-5012","5001-5002","8111-8112"), cex.names = 0.7, col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking partial correlation (ASD) \n")
+
+```
+
+In the plots above we can see the rankings of correlation and partial correlation of asd patients to understand the most resilient connections. The first position is always taken by 5001-5002 whereas the other positions change. For example, the connection at the second position in the left plot becomes the third using the partial correlation.
+
+### The last one to die (TD)
+
+We start from the threshold that we previously chose, namely 0.23. Our purpose is to reach the three most resilient connections for the two groups.
+
+```{r}
+adj_td_ones1_par <- create_adj(lower_par_td, upper_par_td,0.23)
+adj_td_ones2_par <- create_adj(lower_par_td, upper_par_td,0.26)
+adj_td_ones3_par <- create_adj(lower_par_td, upper_par_td,0.30)
+adj_td_ones4_par <- create_adj(lower_par_td, upper_par_td,0.33)
+adj_td_ones5_par <- create_adj(lower_par_td, upper_par_td,0.37)
+adj_td_ones6_par <- create_adj(lower_par_td, upper_par_td,0.40)
+```
+
+```{r}
+data.frame(number_of_resilient = c(sum(adj_td_ones1_par)/2,
+                          sum(adj_td_ones2_par)/2,
+                          sum(adj_td_ones3_par)/2,
+                          sum(adj_td_ones4_par)/2,
+                          sum(adj_td_ones5_par)/2,
+                          sum(adj_td_ones6_par)/2),
+                          row.names = c("t = 0.23",
+                                        "t = 0.26",
+                                        "t = 0.30",
+                                        "t = 0.33",
+                                        "t = 0.37",
+                                        "t = 0.40"))
+```
+
+We discovered that to identify the most three resilient values we have to set the threshold between 0.26 and 0.30. After some trials we discover that the threshold to identify only the most three resilient is 0.29.
+
+```{r}
+adj_td_ones_par <- create_adj(lower_par_td, upper_par_td,0.29)
+```
+
+```{r}
+data.frame(number_of_resilient = sum(adj_td_ones_par)/2,
+                          row.names = "t = 0.29")
+```
+
+We want to represent the most three most resilient connections with a graph
+
+```{r}
+g_ones_td_par  <- graph_from_adjacency_matrix(adj_td_ones_par, mode = "undirected", diag = FALSE)
+
+ggraph(g_ones_td_par, layout = 'fr') +
+  geom_edge_link(colour = "orange", edge_width = 1.2) + 
+  geom_node_point() + 
+  geom_node_text(aes(label = name), repel = TRUE, max.overlaps = 20) +
+  theme_void() +
+  theme(legend.position = "none", plot.title=element_text(hjust=0.5)) +
+  ggtitle("Graph of the 3 most resilient (TD)  \n")
+```
+
+### Last to die (TD)
+
+```{r, fig.keep='all'}
+
+par(mfrow= c(1,2))
+
+barplot(c(0.737,0.738,0.736), names.arg = c("4001-4002","5001-5002","5011-5012"), cex.names = 0.7, col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking correlation (TD) \n")
+
+barplot(c(0.32,0.39,0.29), names.arg = c("2611-2612","5001-5002","4001-4002"), cex.names = 0.7, col = c("grey", "gold", "tan4"), ylim = c(0,1), main = "Ranking partial correlation (TD) \n")
+
+```
+
+In the plots above we can see the rankings of correlation and partial correlation of td patients to understand the most resilient connections. The first position is always taken by 5001-5002 whereas the other positions change. For example, the connection at the second position in the left plot becomes the third using the partial correlation. The second position of the partial plot is taken by 2611-2612.
